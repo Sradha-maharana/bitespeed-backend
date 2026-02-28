@@ -18,6 +18,18 @@ app.post("/identify", async (req, res) => {
   const { email, phoneNumber } = req.body;
 
   try {
+            await pool.query(`
+        CREATE TABLE IF NOT EXISTS Contact (
+            id SERIAL PRIMARY KEY,
+            phoneNumber VARCHAR(20),
+            email VARCHAR(255),
+            linkedId INT,
+            linkPrecedence VARCHAR(20),
+            createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            deletedAt TIMESTAMP
+        );
+            `);
     const existing = await pool.query(
       "SELECT * FROM Contact WHERE email = $1 OR phoneNumber = $2",
       [email, phoneNumber]
