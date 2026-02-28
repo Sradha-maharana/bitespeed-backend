@@ -1,43 +1,32 @@
-const express = require("express");
-const { Pool } = require("pg");
-require("dotenv").config();
-
-const app = express();
-app.use(express.json());
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
-});
-
-app.get("/", (req, res) => {
-  res.send("Bitespeed API is running");
-});
-
 app.post("/identify", async (req, res) => {
   const { email, phoneNumber } = req.body;
 
   try {
-            await pool.query(`
-        CREATE TABLE IF NOT EXISTS Contact (
-            id SERIAL PRIMARY KEY,
-            phoneNumber VARCHAR(20),
-            email VARCHAR(255),
-            linkedId INT,
-            linkPrecedence VARCHAR(20),
-            createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            deletedAt TIMESTAMP
-        );
-            `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS Contact (
+        id SERIAL PRIMARY KEY,
+        phoneNumber VARCHAR(20),
+        email VARCHAR(255),
+        linkedId INT,
+        linkPrecedence VARCHAR(20),
+        createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        deletedAt TIMESTAMP
+      );
+    `);
+
+    // Find existing matches
     const existing = await pool.query(
-      "SELECT * FROM Contact WHERE email = $1 OR phoneNumber = $2",
+      `SELECT * FROM Contact 
+       WHERE email = $1 OR phoneNumber = $2`,
       [email, phoneNumber]
     );
 
+    // 🟢 CASE 1 — No existing → create primary
     if (existing.rows.length === 0) {
       const insert = await pool.query(
-        "INSERT INTO Contact (email, phoneNumber, linkedId, linkPrecedence) VALUES ($1,$2,NULL,'primary') RETURNING *",
+        `INSERT INTO Contact (email, phoneNumber, linkPrecedence)
+         VALUES ($1,$2,'primary') RETURNING *`,
         [email, phoneNumber]
       );
 
@@ -51,14 +40,55 @@ app.post("/identify", async (req, res) => {
       });
     }
 
-    const primary = existing.rows[0];
+    // 🟢 CASE 2 — Existing found
+    // Find true primary
+    let primary =
+      existing.rows.find(r => r.linkprecedence === "primary") ||
+      existing.rows[0];
+
+    const primaryId = primary.linkedid || primary.id;
+
+    // Check exact match
+    const exact = await pool.query(
+      `SELECT * FROM Contact 
+       WHERE email = $1 AND phoneNumber = $2`,
+      [email, phoneNumber]
+    );
+
+    if (exact.rows.length === 0) {
+      await pool.query(
+        `INSERT INTO Contact 
+         (email, phoneNumber, linkedId, linkPrecedence)
+         VALUES ($1,$2,$3,'secondary')`,
+        [email, phoneNumber, primaryId]
+      );
+    }
+
+    // Fetch all linked
+    const all = await pool.query(
+      `SELECT * FROM Contact
+       WHERE id = $1 OR linkedId = $1`,
+      [primaryId]
+    );
+
+    const emails = [
+      ...new Set(all.rows.map(r => r.email).filter(Boolean))
+    ];
+
+    const phones = [
+      ...new Set(all.rows.map(r => r.phonenumber).filter(Boolean))
+    ];
+
+    const secondaryIds = all.rows
+      .filter(r => r.linkprecedence === "secondary")
+      .map(r => r.id);
 
     return res.json({
       contact: {
-        primaryContactId: primary.id,
-        emails: [primary.email],
-        phoneNumbers: [primary.phonenumber],
-        secondaryContactIds: []
+        primaryContactId: primaryId,
+        emails,
+        phoneNumbers: phones,
+        secondaryContactIds: secondaryIds
       }
     });
 
@@ -67,5 +97,3 @@ app.post("/identify", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-app.listen(3000, () => console.log("Server running on port 3000"));
